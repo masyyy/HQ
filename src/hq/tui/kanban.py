@@ -110,7 +110,7 @@ class KanbanBoard(HorizontalScroll):
 
     module: reactive[str] = reactive("board")
 
-    def __init__(self, module: str, id: str | None = None) -> None:
+    def __init__(self, module: str = "board", id: str | None = None) -> None:
         super().__init__(id=id)
         self.module = module
 
@@ -126,9 +126,16 @@ class KanbanBoard(HorizontalScroll):
         for stage in stages:
             yield KanbanColumn(stage, grouped[stage])
 
-    def refresh_board(self) -> None:
-        """Reload data and rebuild the board."""
-        self.remove_children()
+    def refresh_board(self, focus_entity_id: int | None = None) -> None:
+        """Reload data and rebuild the board.
+
+        Removes existing columns and mounts fresh ones synchronously.
+        Focus restoration is deferred via call_later so the new widgets
+        are fully attached before we try to focus.
+        """
+        for child in self.query(KanbanColumn):
+            child.remove()
+
         stages = get_stages(self.module)
         entities = list_entities(self.module)
 
@@ -137,5 +144,13 @@ class KanbanBoard(HorizontalScroll):
             if e["stage"] in grouped:
                 grouped[e["stage"]].append(e)
 
-        for stage in stages:
-            self.mount(KanbanColumn(stage, grouped[stage]))
+        columns = [KanbanColumn(stage, grouped[stage]) for stage in stages]
+        self.mount_all(columns)
+
+        if focus_entity_id is not None:
+            def _restore_focus() -> None:
+                for card in self.query(Card):
+                    if card.entity["id"] == focus_entity_id:
+                        card.focus()
+                        return
+            self.call_later(_restore_focus)

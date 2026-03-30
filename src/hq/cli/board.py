@@ -4,7 +4,7 @@ from typing import Optional
 import typer
 
 from hq.cli.common import render_entity_table, render_entity_detail
-from hq.db.queries import add_entity, list_entities, get_entity_one, move_entity, edit_entity, delete_entity
+from hq.db.queries import add_entity, list_entities, get_entity_one, move_entity, edit_entity, delete_entity, reorder_entity
 
 board_app = typer.Typer(help="Product board -- features, bugs, tasks.")
 
@@ -89,6 +89,20 @@ def delete(
     try:
         entity = delete_entity(MODULE, query)
         print(f"Deleted '{entity['title']}'")
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        raise typer.Exit(1)
+
+
+@board_app.command()
+def prioritize(
+    query: str = typer.Argument(..., help="Item to reorder (fuzzy match)"),
+    direction: str = typer.Argument(..., help="up, down, top, or bottom"),
+) -> None:
+    """Reorder a board item within its current stage."""
+    try:
+        entity = reorder_entity(MODULE, query, direction)
+        print(f"Moved '{entity['title']}' {direction}")
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
         raise typer.Exit(1)

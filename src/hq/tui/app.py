@@ -8,7 +8,7 @@ from hq.tui.banner import get_banner
 from hq.tui.kanban import KanbanBoard, Card, KanbanColumn
 from hq.tui.detail import DetailScreen
 from hq.config import get_stages
-from hq.db.queries import move_entity_by_id
+from hq.db.queries import move_entity_by_id, reorder_entity_by_id
 
 
 MODULES = ["board", "crm"]
@@ -16,6 +16,8 @@ MODULES = ["board", "crm"]
 # Keys that move mode intercepts
 _MOVE_LEFT_KEYS = {"h", "left"}
 _MOVE_RIGHT_KEYS = {"l", "right"}
+_MOVE_UP_KEYS = {"k", "up"}
+_MOVE_DOWN_KEYS = {"j", "down"}
 _MOVE_EXIT_KEYS = {"escape", "m", "enter", "q"}
 
 
@@ -41,7 +43,7 @@ class ModuleBar(Static):
                 parts.append(f"[dim] {key}:{mod.upper()} [/dim]")
         bar = "  ".join(parts)
         if move_mode:
-            bar += "    [bold yellow]MOVE[/bold yellow] [dim]h/l: move, esc: done[/dim]"
+            bar += "    [bold yellow]MOVE[/bold yellow] [dim]h/l: stage, j/k: reorder, esc: done[/dim]"
         self.update(bar)
 
 
@@ -51,7 +53,7 @@ class HQApp(App):
     TITLE = "HQ"
     AUTO_FOCUS = None
 
-    active_module: reactive[str] = reactive("board")
+    active_module: reactive[str] = reactive("board", init=False)
     _move_mode: bool = False
     _move_entity_id: int | None = None
 
@@ -87,8 +89,7 @@ class HQApp(App):
         yield Header()
         yield Static(get_banner(), id="banner")
         yield ModuleBar()
-        for mod in MODULES:
-            yield KanbanBoard(mod, id=f"board-{mod}")
+        yield KanbanBoard(self.active_module, id="kanban")
         yield Footer()
 
     # -- Key event routing --
@@ -105,6 +106,14 @@ class HQApp(App):
             event.stop()
         elif key in _MOVE_RIGHT_KEYS:
             self._move_card(+1)
+            event.prevent_default()
+            event.stop()
+        elif key in _MOVE_UP_KEYS:
+            self._reorder_card("up")
+            event.prevent_default()
+            event.stop()
+        elif key in _MOVE_DOWN_KEYS:
+            self._reorder_card("down")
             event.prevent_default()
             event.stop()
         elif key in _MOVE_EXIT_KEYS:
@@ -135,21 +144,22 @@ class HQApp(App):
         banner.update(get_banner(compact=h < 30 or w < 76))
 
     def _sync_visible_board(self) -> None:
-        for mod in MODULES:
-            board = self.query_one(f"#board-{mod}", KanbanBoard)
-            is_active = mod == self.active_module
-            board.display = is_active
-            if is_active:
-                board.refresh_board()
+        board = self.query_one("#kanban", KanbanBoard)
+        board.module = self.active_module
+        board.refresh_board()
         self.query_one(ModuleBar).render_bar(self.active_module, self._move_mode)
 
     def watch_active_module(self, value: str) -> None:
+        try:
+            self.query_one("#kanban", KanbanBoard)
+        except Exception:
+            return
         self._sync_visible_board()
 
     # -- Card navigation helpers --
 
     def _get_visible_cards(self) -> list[Card]:
-        return list(self.query_one(f"#board-{self.active_module}", KanbanBoard).query(Card))
+        return list(self.query_one("#kanban", KanbanBoard).query(Card))
 
     def _cards_in_column(self, card: Card) -> list[Card]:
         column = card.parent
@@ -174,13 +184,9 @@ class HQApp(App):
             new_idx += direction
         return None
 
-    def _focus_card_by_id(self, entity_id: int) -> None:
-        """Find a card by entity ID and focus it."""
-        board = self.query_one(f"#board-{self.active_module}", KanbanBoard)
-        for card in board.query(Card):
-            if card.entity["id"] == entity_id:
-                card.focus()
-                return
+    def _refresh_and_focus(self, entity_id: int | None = None) -> None:
+        """Refresh the board and optionally refocus a card."""
+        self.query_one("#kanban", KanbanBoard).refresh_board(focus_entity_id=entity_id)
 
     # -- Move mode --
 
@@ -198,13 +204,20 @@ class HQApp(App):
         self._move_entity_id = None
         self.query_one(ModuleBar).render_bar(self.active_module, False)
         if entity_id is not None:
-            self._focus_card_by_id(entity_id)
+            self._refresh_and_focus(entity_id)
+
+    def _reorder_card(self, direction: str) -> None:
+        """Reorder the focused card up/down within its column."""
+        if self._move_entity_id is None:
+            return
+        reorder_entity_by_id(self._move_entity_id, direction)
+        self._refresh_and_focus(self._move_entity_id)
 
     def _move_card(self, direction: int) -> None:
         if self._move_entity_id is None:
             return
         # Find the current card to get its stage
-        board = self.query_one(f"#board-{self.active_module}", KanbanBoard)
+        board = self.query_one("#kanban", KanbanBoard)
         current_card = None
         for card in board.query(Card):
             if card.entity["id"] == self._move_entity_id:
@@ -225,8 +238,7 @@ class HQApp(App):
 
         new_stage = stages[new_idx]
         move_entity_by_id(self._move_entity_id, new_stage)
-        board.refresh_board()
-        self._focus_card_by_id(self._move_entity_id)
+        self._refresh_and_focus(self._move_entity_id)
 
     # -- Navigation actions --
 
@@ -290,8 +302,7 @@ class HQApp(App):
         self.push_screen(DetailScreen(event.entity), callback=self._on_detail_dismissed)
 
     def _on_detail_dismissed(self, result: object) -> None:
-        board = self.query_one(f"#board-{self.active_module}", KanbanBoard)
-        board.refresh_board()
+        self._refresh_and_focus()
 
     # -- Module switching --
 
@@ -309,11 +320,10 @@ class HQApp(App):
     # -- Misc --
 
     def action_refresh(self) -> None:
-        for board in self.query(KanbanBoard):
-            board.refresh_board()
+        self._refresh_and_focus()
 
     def action_help(self) -> None:
         self.notify(
-            "1/2 [/]: module | j/k/h/l: navigate | enter: detail | m: move | r: refresh | q: quit",
+            "1/2 [/]: module | j/k/h/l: navigate | enter: detail | m: move (h/l: stage, j/k: reorder) | r: refresh | q: quit",
             title="Help",
         )

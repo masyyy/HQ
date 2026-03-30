@@ -7,7 +7,7 @@ import typer
 from hq.cli.common import render_entity_table, render_entity_detail
 from hq.db.queries import (
     add_entity, list_entities, get_entity_one, move_entity, edit_entity,
-    delete_entity, add_contact, remove_contact,
+    delete_entity, add_contact, remove_contact, reorder_entity,
 )
 
 crm_app = typer.Typer(help="CRM -- sales pipeline, contacts, deals.")
@@ -93,6 +93,20 @@ def delete(
     try:
         entity = delete_entity(MODULE, query)
         print(f"Deleted '{entity['title']}'")
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        raise typer.Exit(1)
+
+
+@crm_app.command()
+def prioritize(
+    query: str = typer.Argument(..., help="Entry to reorder (fuzzy match)"),
+    direction: str = typer.Argument(..., help="up, down, top, or bottom"),
+) -> None:
+    """Reorder a CRM entry within its current stage."""
+    try:
+        entity = reorder_entity(MODULE, query, direction)
+        print(f"Moved '{entity['title']}' {direction}")
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
         raise typer.Exit(1)
